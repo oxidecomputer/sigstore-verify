@@ -7,8 +7,11 @@ use x509_cert::Certificate;
 #[serde(rename_all = "camelCase")]
 pub struct TrustedRoot {
     pub media_type: TrustedRootMediaType,
+    #[serde(default)]
     pub certificate_authorities: Vec<TrustedRootCa>,
+    #[serde(default)]
     pub timestamp_authorities: Vec<TrustedRootCa>,
+    #[serde(default)]
     pub tlogs: Vec<TrustedRootTlog>,
 }
 

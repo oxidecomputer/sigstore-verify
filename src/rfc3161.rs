@@ -24,10 +24,10 @@ use cms::signed_data::{SignedData, SignerIdentifier};
 use der::asn1::{OctetString, SetOfVec};
 use der::oid::ObjectIdentifier;
 use der::oid::db::rfc5911::{ID_CONTENT_TYPE, ID_MESSAGE_DIGEST};
-use der::oid::db::rfc5912::ID_SHA_256;
+use der::oid::db::rfc5912::{ID_SHA_256, ID_SHA_384};
 use der::{Decode, Encode as _};
 use jiff::Timestamp;
-use sha2::{Digest as _, Sha256};
+use sha2::{Digest as _, Sha256, Sha384};
 use x509_cert::attr::Attribute;
 use x509_tsp::{TimeStampResp, TstInfo};
 
@@ -92,6 +92,7 @@ pub(crate) fn validate_rfc3161(
             let message_digest: OctetString = get_attr(attrs, ID_MESSAGE_DIGEST)?;
             let econtent_digest = match signature.digest_alg.oid {
                 ID_SHA_256 => Sha256::digest(econtent).to_vec(),
+                ID_SHA_384 => Sha384::digest(econtent).to_vec(),
                 oid => return Err(Rfc3161Error::UnsupportedHash(oid)),
             };
             if econtent_digest != message_digest.as_bytes() {

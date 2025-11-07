@@ -3,7 +3,7 @@ use crate::digest::{Digest, DigestCollection, DigestError};
 use crate::dsse::{DsseError, dsse_signature, verify_dsse};
 use crate::rekor_timestamp::{RekorTimestampError, validate_rekor_timestamp};
 use crate::repr::bundle::{Bundle, BundleContent, BundleDigestAlgorithm};
-use crate::repr::in_toto::{InTotoDigest, InTotoSubject};
+use crate::repr::in_toto::{InTotoDigest, InTotoPredicate, InTotoSubject};
 use crate::repr::trusted_root::TrustedRoot;
 use crate::rfc3161::{Rfc3161Error, validate_rfc3161};
 use crate::x509::{CertError, ensure_trusted_cert, verify_signature};
@@ -31,22 +31,22 @@ use std::io::Read;
 /// let bundle: Bundle = serde_json::from_slice(bundle_content)?;
 /// let mut content = std::io::Cursor::new(signed_content);
 ///
-/// let claims = verify_no_tlog(&root, &bundle, &mut content)?;
+/// let outcome = verify_no_tlog(&root, &bundle, &mut content)?;
 /// assert_eq!(
-///     claims.issuer_v2.as_deref(),
+///     outcome.claims.issuer_v2.as_deref(),
 ///     Some("https://token.actions.githubusercontent.com"),
 /// );
 /// assert_eq!(
-///     claims.source_repository_uri.as_deref(),
+///     outcome.claims.source_repository_uri.as_deref(),
 ///     Some("https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon"),
 /// );
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn verify_no_tlog(
+pub fn verify_no_tlog<'a>(
     root: &TrustedRoot,
-    bundle: &Bundle,
+    bundle: &'a Bundle,
     content: &mut dyn Read,
-) -> Result<Claims, VerifyError> {
+) -> Result<VerifyOutcome<'a>, VerifyError> {
     let verification = &bundle.verification_material;
 
     let content_digest = DigestCollection::calculate_from_reader(content)
@@ -83,7 +83,13 @@ pub fn verify_no_tlog(
         verify_with_timestamp(root, bundle, timestamp, &content_digest)?;
     }
 
-    Ok(Claims::from_certificate(&verification.certificate)?)
+    Ok(VerifyOutcome {
+        claims: Claims::from_certificate(&verification.certificate)?,
+        in_toto: match &bundle.content {
+            BundleContent::MessageSignature(_) => None,
+            BundleContent::DsseEnvelope(dsse) => Some(&dsse.payload.parsed.predicate),
+        },
+    })
 }
 
 fn verify_with_timestamp(
@@ -212,6 +218,12 @@ pub(crate) enum DigestOf {
     DsseEnvelope,
 }
 
+#[derive(Debug)]
+pub struct VerifyOutcome<'a> {
+    pub claims: Claims,
+    pub in_toto: Option<&'a InTotoPredicate>,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum VerifyError {
@@ -265,57 +277,66 @@ mod tests {
         let claims = verify_no_tlog(&root, &bundle, &mut file).unwrap();
 
         expect![[r#"
-            Claims {
-                build_config_digest: Some(
-                    "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+            VerifyOutcome {
+                claims: Claims {
+                    build_config_digest: Some(
+                        "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+                    ),
+                    build_config_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_signer_digest: Some(
+                        "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+                    ),
+                    build_signer_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_trigger: Some(
+                        "workflow_dispatch",
+                    ),
+                    issuer_v2: Some(
+                        "https://token.actions.githubusercontent.com",
+                    ),
+                    run_invocation_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/12359147651/attempts/1",
+                    ),
+                    runner_environment: Some(
+                        "github-hosted",
+                    ),
+                    source_repository_digest: Some(
+                        "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+                    ),
+                    source_repository_identifier: Some(
+                        "632596897",
+                    ),
+                    source_repository_owner_identifier: Some(
+                        "131804563",
+                    ),
+                    source_repository_owner_uri: Some(
+                        "https://github.com/sigstore-conformance",
+                    ),
+                    source_repository_ref: Some(
+                        "refs/heads/main",
+                    ),
+                    source_repository_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
+                    ),
+                    source_repository_visibility_at_signing: Some(
+                        "public",
+                    ),
+                    subject_alternative_names_emails: [],
+                    subject_alternative_names_domains: [],
+                    subject_alternative_names_uris: [
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ],
+                },
+                in_toto: Some(
+                    Provenance1(
+                        InTotoPredicateWrapper {
+                            predicate: InTotoProvenance1,
+                        },
+                    ),
                 ),
-                build_config_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_signer_digest: Some(
-                    "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
-                ),
-                build_signer_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_trigger: Some(
-                    "workflow_dispatch",
-                ),
-                issuer_v2: Some(
-                    "https://token.actions.githubusercontent.com",
-                ),
-                run_invocation_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/12359147651/attempts/1",
-                ),
-                runner_environment: Some(
-                    "github-hosted",
-                ),
-                source_repository_digest: Some(
-                    "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
-                ),
-                source_repository_identifier: Some(
-                    "632596897",
-                ),
-                source_repository_owner_identifier: Some(
-                    "131804563",
-                ),
-                source_repository_owner_uri: Some(
-                    "https://github.com/sigstore-conformance",
-                ),
-                source_repository_ref: Some(
-                    "refs/heads/main",
-                ),
-                source_repository_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
-                ),
-                source_repository_visibility_at_signing: Some(
-                    "public",
-                ),
-                subject_alternative_names_emails: [],
-                subject_alternative_names_domains: [],
-                subject_alternative_names_uris: [
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ],
             }
         "#]]
         .assert_debug_eq(&claims);
@@ -339,57 +360,60 @@ mod tests {
         let claims = verify_no_tlog(&root, &bundle, &mut file).unwrap();
 
         expect![[r#"
-            Claims {
-                build_config_digest: Some(
-                    "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
-                ),
-                build_config_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_signer_digest: Some(
-                    "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
-                ),
-                build_signer_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_trigger: Some(
-                    "workflow_dispatch",
-                ),
-                issuer_v2: Some(
-                    "https://token.actions.githubusercontent.com",
-                ),
-                run_invocation_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/8347481628/attempts/1",
-                ),
-                runner_environment: Some(
-                    "github-hosted",
-                ),
-                source_repository_digest: Some(
-                    "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
-                ),
-                source_repository_identifier: Some(
-                    "632596897",
-                ),
-                source_repository_owner_identifier: Some(
-                    "131804563",
-                ),
-                source_repository_owner_uri: Some(
-                    "https://github.com/sigstore-conformance",
-                ),
-                source_repository_ref: Some(
-                    "refs/heads/main",
-                ),
-                source_repository_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
-                ),
-                source_repository_visibility_at_signing: Some(
-                    "public",
-                ),
-                subject_alternative_names_emails: [],
-                subject_alternative_names_domains: [],
-                subject_alternative_names_uris: [
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ],
+            VerifyOutcome {
+                claims: Claims {
+                    build_config_digest: Some(
+                        "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
+                    ),
+                    build_config_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_signer_digest: Some(
+                        "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
+                    ),
+                    build_signer_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_trigger: Some(
+                        "workflow_dispatch",
+                    ),
+                    issuer_v2: Some(
+                        "https://token.actions.githubusercontent.com",
+                    ),
+                    run_invocation_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/8347481628/attempts/1",
+                    ),
+                    runner_environment: Some(
+                        "github-hosted",
+                    ),
+                    source_repository_digest: Some(
+                        "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
+                    ),
+                    source_repository_identifier: Some(
+                        "632596897",
+                    ),
+                    source_repository_owner_identifier: Some(
+                        "131804563",
+                    ),
+                    source_repository_owner_uri: Some(
+                        "https://github.com/sigstore-conformance",
+                    ),
+                    source_repository_ref: Some(
+                        "refs/heads/main",
+                    ),
+                    source_repository_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
+                    ),
+                    source_repository_visibility_at_signing: Some(
+                        "public",
+                    ),
+                    subject_alternative_names_emails: [],
+                    subject_alternative_names_domains: [],
+                    subject_alternative_names_uris: [
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ],
+                },
+                in_toto: None,
             }
         "#]]
         .assert_debug_eq(&claims);

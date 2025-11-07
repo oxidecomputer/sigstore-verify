@@ -19,4 +19,4 @@ pub mod errors {
 }
 
 pub use claims::Claims;
-pub use verify::verify_no_tlog;
+pub use verify::{VerifyOutcome, verify_no_tlog};
