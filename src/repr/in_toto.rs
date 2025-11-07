@@ -18,8 +18,10 @@ pub struct InTotoSubject {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InTotoDigest {
-    #[serde(with = "hex::serde")]
-    pub sha256: Vec<u8>,
+    #[serde(default, deserialize_with = "crate::utils::deserialize_option_hex")]
+    pub sha1: Option<Vec<u8>>,
+    #[serde(default, deserialize_with = "crate::utils::deserialize_option_hex")]
+    pub sha256: Option<Vec<u8>>,
 }
 
 media_type! {

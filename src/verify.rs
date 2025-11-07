@@ -3,7 +3,7 @@ use crate::digest::{Digest, DigestCollection, DigestError};
 use crate::dsse::{DsseError, dsse_signature, verify_dsse};
 use crate::rekor_timestamp::{RekorTimestampError, validate_rekor_timestamp};
 use crate::repr::bundle::{Bundle, BundleContent, BundleDigestAlgorithm};
-use crate::repr::in_toto::InTotoDigest;
+use crate::repr::in_toto::{InTotoDigest, InTotoSubject};
 use crate::repr::trusted_root::TrustedRoot;
 use crate::rfc3161::{Rfc3161Error, validate_rfc3161};
 use crate::x509::{CertError, ensure_trusted_cert, verify_signature};
@@ -99,7 +99,7 @@ fn verify_with_timestamp(
     // Sigstore bundles contain the hash of the signed content in one of two ways: either directly
     // signed by the certificate and stored in the bundle, or within an in-toto statement encoded
     // into a DSSE envelope which is then signed by the certificate. Handle either case.
-    let digest = match &bundle.content {
+    let digests = match &bundle.content {
         BundleContent::MessageSignature(ms) => {
             let message_digest = &ms.message_digest.digest;
             verify_signature(
@@ -110,29 +110,54 @@ fn verify_with_timestamp(
             )
             .map_err(VerifyError::InvalidSignature)?;
             match ms.message_digest.algorithm {
-                BundleDigestAlgorithm::Sha256 => Digest::sha256_prehashed(message_digest.clone()),
+                BundleDigestAlgorithm::Sha256 => {
+                    vec![Digest::sha256_prehashed(message_digest.clone())]
+                }
             }
         }
         BundleContent::DsseEnvelope(dsse) => {
             let in_toto = verify_dsse(timestamp.timestamp, &certificate, dsse)?;
-            let [subject] = in_toto.subject.as_slice() else {
-                return Err(VerifyError::WrongInTotoSubjectCount(in_toto.subject.len()));
-            };
-
-            // If you add a compilation error due to new variants, implement some logic to choose which
-            // hash to return from the function.
-            let InTotoDigest { sha256 } = &subject.digest;
-            Digest::sha256_prehashed(sha256.clone())
+            dsse_digests(&in_toto.subject)?
         }
     };
 
-    content_digest
-        .verify(&digest)
-        .map_err(VerifyError::VerifyContentDigest)?;
+    // There can be multiple digests included in the bundle (if there is a DSSE envelope). One
+    // example of such a bundle is GitHub's release attestations, whose in-toto statement inside
+    // the DSSE envelope contains a subject for every file included in the release.
+    let mut matched = false;
+    for digest in digests {
+        match content_digest.verify(&digest) {
+            Ok(()) => {
+                matched = true;
+                break;
+            }
+            Err(DigestError::HashMismatch) => {}
+            Err(err) => return Err(VerifyError::VerifyContentDigest(err)),
+        }
+    }
+    if !matched {
+        return Err(VerifyError::VerifyContentDigest(DigestError::HashMismatch));
+    }
 
     ensure_timestamp_hash(bundle, timestamp, content_digest)?;
 
     Ok(())
+}
+
+fn dsse_digests(subjects: &[InTotoSubject]) -> Result<Vec<Digest>, VerifyError> {
+    let mut digests = Vec::new();
+    for subject in subjects {
+        // Deconstruct the struct to ensure we get an error when a new algorithm is added.
+        let InTotoDigest { sha1, sha256 } = &subject.digest;
+
+        if let Some(sha1) = sha1 {
+            digests.push(Digest::sha1_prehashed(sha1.clone()));
+        }
+        if let Some(sha256) = sha256 {
+            digests.push(Digest::sha256_prehashed(sha256.clone()));
+        }
+    }
+    Ok(digests)
 }
 
 /// It's crucial the signed timestamp was generated specifically for this bundle, and wasn't
@@ -206,8 +231,6 @@ pub enum VerifyError {
     NoTimestamps,
     #[error("digest of the DSSE envelope is requested when the bundle doesn't have it")]
     DigestOfDsseWithoutDsse,
-    #[error("expected one in-toto subject in the DSSE envelope, found {0}")]
-    WrongInTotoSubjectCount(usize),
     #[error("failed to calculate the digest of the content")]
     CalculateContentDigest(#[source] DigestError),
     #[error("failed to verify the digest of the content")]

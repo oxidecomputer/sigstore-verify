@@ -77,6 +77,18 @@ where
     }
 }
 
+/// Annotate a field with `#[serde(deserialize_with = "crate::utils::deserialize_option_hex")]` to
+/// deserialize an Option<String> field into an Option<Vec<u8>> when the string is hex-encoded.
+pub(crate) fn deserialize_option_hex<'de, D>(de: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match <Option<String>>::deserialize(de)? {
+        Some(val) => Ok(Some(hex::decode(&val).map_err(D::Error::custom)?)),
+        None => Ok(None),
+    }
+}
+
 /// Define an unit type deserializing only to the requested media type.
 macro_rules! media_type {
     ($(#[$attr:meta])* $vis:vis struct $name:ident = $media:expr $(, $fallback:expr)*;) => {
