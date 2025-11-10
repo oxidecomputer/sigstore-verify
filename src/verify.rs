@@ -1,14 +1,14 @@
 use crate::claims::{Claims, ClaimsError};
-use crate::digest::Digest;
+use crate::digest::{Digest, DigestCollection, DigestError};
 use crate::dsse::{DsseError, dsse_signature, verify_dsse};
 use crate::rekor_timestamp::{RekorTimestampError, validate_rekor_timestamp};
 use crate::repr::bundle::{Bundle, BundleContent, BundleDigestAlgorithm};
-use crate::repr::in_toto::InTotoDigest;
+use crate::repr::in_toto::{InTotoDigest, InTotoPredicate, InTotoSubject};
 use crate::repr::trusted_root::TrustedRoot;
 use crate::rfc3161::{Rfc3161Error, validate_rfc3161};
 use crate::x509::{CertError, ensure_trusted_cert, verify_signature};
 use jiff::Timestamp;
-use std::io::{Read, Seek};
+use std::io::Read;
 
 /// Verify that the provided Sigstore bundle matches the provided content.
 ///
@@ -31,23 +31,26 @@ use std::io::{Read, Seek};
 /// let bundle: Bundle = serde_json::from_slice(bundle_content)?;
 /// let mut content = std::io::Cursor::new(signed_content);
 ///
-/// let claims = verify_no_tlog(&root, &bundle, &mut content)?;
+/// let outcome = verify_no_tlog(&root, &bundle, &mut content)?;
 /// assert_eq!(
-///     claims.issuer_v2.as_deref(),
+///     outcome.claims.issuer_v2.as_deref(),
 ///     Some("https://token.actions.githubusercontent.com"),
 /// );
 /// assert_eq!(
-///     claims.source_repository_uri.as_deref(),
+///     outcome.claims.source_repository_uri.as_deref(),
 ///     Some("https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon"),
 /// );
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn verify_no_tlog<T: Read + Seek>(
+pub fn verify_no_tlog<'a>(
     root: &TrustedRoot,
-    bundle: &Bundle,
-    mut content: T,
-) -> Result<Claims, VerifyError> {
+    bundle: &'a Bundle,
+    content: &mut dyn Read,
+) -> Result<VerifyOutcome<'a>, VerifyError> {
     let verification = &bundle.verification_material;
+
+    let content_digest = DigestCollection::calculate_from_reader(content)
+        .map_err(VerifyError::CalculateContentDigest)?;
 
     // Sigstore certificates are intentionally short-lived (the Fulcio CA returns certificates with
     // a 10 minute lifespan), so they are almost certainly expired by the time this function is
@@ -77,17 +80,23 @@ pub fn verify_no_tlog<T: Read + Seek>(
         return Err(VerifyError::NoTimestamps);
     }
     for timestamp in &timestamps {
-        verify_with_timestamp(root, bundle, timestamp, &mut content)?;
+        verify_with_timestamp(root, bundle, timestamp, &content_digest)?;
     }
 
-    Ok(Claims::from_certificate(&verification.certificate)?)
+    Ok(VerifyOutcome {
+        claims: Claims::from_certificate(&verification.certificate)?,
+        in_toto: match &bundle.content {
+            BundleContent::MessageSignature(_) => None,
+            BundleContent::DsseEnvelope(dsse) => Some(&dsse.payload.parsed.predicate),
+        },
+    })
 }
 
-fn verify_with_timestamp<T: Read + Seek>(
+fn verify_with_timestamp(
     root: &TrustedRoot,
     bundle: &Bundle,
     timestamp: &VerifiedTimestamp,
-    content: T,
+    content_digest: &DigestCollection,
 ) -> Result<(), VerifyError> {
     let certificate = &bundle.verification_material.certificate;
     ensure_trusted_cert(timestamp.timestamp, root, &certificate)
@@ -96,7 +105,7 @@ fn verify_with_timestamp<T: Read + Seek>(
     // Sigstore bundles contain the hash of the signed content in one of two ways: either directly
     // signed by the certificate and stored in the bundle, or within an in-toto statement encoded
     // into a DSSE envelope which is then signed by the certificate. Handle either case.
-    let digest = match &bundle.content {
+    let digests = match &bundle.content {
         BundleContent::MessageSignature(ms) => {
             let message_digest = &ms.message_digest.digest;
             verify_signature(
@@ -107,68 +116,92 @@ fn verify_with_timestamp<T: Read + Seek>(
             )
             .map_err(VerifyError::InvalidSignature)?;
             match ms.message_digest.algorithm {
-                BundleDigestAlgorithm::Sha256 => Digest::Sha256(message_digest.clone()),
+                BundleDigestAlgorithm::Sha256 => {
+                    vec![Digest::sha256_prehashed(message_digest.clone())]
+                }
             }
         }
         BundleContent::DsseEnvelope(dsse) => {
             let in_toto = verify_dsse(timestamp.timestamp, &certificate, dsse)?;
-            let [subject] = in_toto.subject.as_slice() else {
-                return Err(VerifyError::WrongInTotoSubjectCount(in_toto.subject.len()));
-            };
-
-            // If you add a compilation error due to new variants, implement some logic to choose which
-            // hash to return from the function.
-            let InTotoDigest { sha256 } = &subject.digest;
-            Digest::Sha256(sha256.clone())
+            dsse_digests(&in_toto.subject)?
         }
     };
 
-    // TODO: maybe hash only once?
-    if !digest
-        .matches_stream(content)
-        .map_err(VerifyError::Hashing)?
-    {
-        return Err(VerifyError::HashMismatch);
+    // There can be multiple digests included in the bundle (if there is a DSSE envelope). One
+    // example of such a bundle is GitHub's release attestations, whose in-toto statement inside
+    // the DSSE envelope contains a subject for every file included in the release.
+    let mut matched = false;
+    for digest in digests {
+        match content_digest.verify(&digest) {
+            Ok(()) => {
+                matched = true;
+                break;
+            }
+            Err(DigestError::HashMismatch) => {}
+            Err(err) => return Err(VerifyError::VerifyContentDigest(err)),
+        }
+    }
+    if !matched {
+        return Err(VerifyError::VerifyContentDigest(DigestError::HashMismatch));
     }
 
-    ensure_timestamp_hash(bundle, timestamp, digest)?;
+    ensure_timestamp_hash(bundle, timestamp, content_digest)?;
 
     Ok(())
+}
+
+fn dsse_digests(subjects: &[InTotoSubject]) -> Result<Vec<Digest>, VerifyError> {
+    let mut digests = Vec::new();
+    for subject in subjects {
+        // Deconstruct the struct to ensure we get an error when a new algorithm is added.
+        let InTotoDigest { sha1, sha256 } = &subject.digest;
+
+        if let Some(sha1) = sha1 {
+            digests.push(Digest::sha1_prehashed(sha1.clone()));
+        }
+        if let Some(sha256) = sha256 {
+            digests.push(Digest::sha256_prehashed(sha256.clone()));
+        }
+    }
+    Ok(digests)
 }
 
 /// It's crucial the signed timestamp was generated specifically for this bundle, and wasn't
 /// requested for other purposes. We thus check whether the digest embedded in the signature
 /// matches the contents of the bundle.
-fn ensure_timestamp_hash(
-    bundle: &Bundle,
+fn ensure_timestamp_hash<'a>(
+    bundle: &'a Bundle,
     timestamp: &VerifiedTimestamp,
-    file_digest: Digest,
+    content_digest: &DigestCollection,
 ) -> Result<(), VerifyError> {
-    // For unscrutable reasons, different sources of trusted timestamps hash different parts of the
-    // bundle. Hash the correct thing depending on what the trusted timestamp tells us.
-    let expected_timestamp_digest = match timestamp.digest_of {
+    let mut extend_lifetime;
+
+    // Different sources of trusted timestamps hash different parts of the bundle. Hash the correct
+    // thing depending on what the trusted timestamp tells us.
+    let collection = match timestamp.digest_of {
         DigestOf::Signature => match &bundle.content {
-            BundleContent::MessageSignature(ms) => &ms.signature,
-            BundleContent::DsseEnvelope(dsse) => dsse_signature(dsse)?,
-        },
-        DigestOf::FileDigest => {
-            // TODO: this is wrong, it needs to go through the normal flow.
-            if timestamp.digest == file_digest {
-                return Ok(());
-            } else {
-                return Err(VerifyError::HashMismatch);
+            BundleContent::MessageSignature(ms) => {
+                extend_lifetime = DigestCollection::calculate(&ms.signature);
+                &extend_lifetime
             }
-        }
+            BundleContent::DsseEnvelope(dsse) => {
+                extend_lifetime = DigestCollection::calculate(dsse_signature(dsse)?);
+                &extend_lifetime
+            }
+        },
+        DigestOf::FileDigest => content_digest,
         DigestOf::DsseEnvelope => match &bundle.content {
             BundleContent::MessageSignature(_) => return Err(VerifyError::DigestOfDsseWithoutDsse),
-            BundleContent::DsseEnvelope(dsse) => &dsse.payload.raw,
+            BundleContent::DsseEnvelope(dsse) => {
+                extend_lifetime = DigestCollection::calculate(&dsse.payload.raw);
+                &mut extend_lifetime
+            }
         },
     };
-    if timestamp.digest.matches(expected_timestamp_digest) {
-        Ok(())
-    } else {
-        Err(VerifyError::TimestampHashMismatch)
-    }
+
+    collection
+        .verify(&timestamp.digest)
+        .map_err(VerifyError::VerifyTimestampDigest)
 }
 
 #[derive(Debug)]
@@ -183,6 +216,12 @@ pub(crate) enum DigestOf {
     Signature,
     FileDigest,
     DsseEnvelope,
+}
+
+#[derive(Debug)]
+pub struct VerifyOutcome<'a> {
+    pub claims: Claims,
+    pub in_toto: Option<&'a InTotoPredicate>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -200,18 +239,16 @@ pub enum VerifyError {
     InvalidSignature(#[source] CertError),
     #[error("invalid DSSE signature")]
     InvalidDsseSignature(#[from] DsseError),
-    #[error("the hash contained in the bundle doesn't match the hash of the file")]
-    HashMismatch,
-    #[error("the hash contained in the signed timestamp doesn't apply to this bundle")]
-    TimestampHashMismatch,
     #[error("the bundle doesn't contain any trusted timestamp")]
     NoTimestamps,
     #[error("digest of the DSSE envelope is requested when the bundle doesn't have it")]
     DigestOfDsseWithoutDsse,
-    #[error("expected one in-toto subject in the DSSE envelope, found {0}")]
-    WrongInTotoSubjectCount(usize),
-    #[error("failed to hash the file to verify")]
-    Hashing(#[source] std::io::Error),
+    #[error("failed to calculate the digest of the content")]
+    CalculateContentDigest(#[source] DigestError),
+    #[error("failed to verify the digest of the content")]
+    VerifyContentDigest(#[source] DigestError),
+    #[error("failed to verify the digest of the timestamp")]
+    VerifyTimestampDigest(#[source] DigestError),
 }
 
 #[cfg(test)]
@@ -240,57 +277,66 @@ mod tests {
         let claims = verify_no_tlog(&root, &bundle, &mut file).unwrap();
 
         expect![[r#"
-            Claims {
-                build_config_digest: Some(
-                    "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+            VerifyOutcome {
+                claims: Claims {
+                    build_config_digest: Some(
+                        "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+                    ),
+                    build_config_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_signer_digest: Some(
+                        "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+                    ),
+                    build_signer_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_trigger: Some(
+                        "workflow_dispatch",
+                    ),
+                    issuer_v2: Some(
+                        "https://token.actions.githubusercontent.com",
+                    ),
+                    run_invocation_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/12359147651/attempts/1",
+                    ),
+                    runner_environment: Some(
+                        "github-hosted",
+                    ),
+                    source_repository_digest: Some(
+                        "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
+                    ),
+                    source_repository_identifier: Some(
+                        "632596897",
+                    ),
+                    source_repository_owner_identifier: Some(
+                        "131804563",
+                    ),
+                    source_repository_owner_uri: Some(
+                        "https://github.com/sigstore-conformance",
+                    ),
+                    source_repository_ref: Some(
+                        "refs/heads/main",
+                    ),
+                    source_repository_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
+                    ),
+                    source_repository_visibility_at_signing: Some(
+                        "public",
+                    ),
+                    subject_alternative_names_emails: [],
+                    subject_alternative_names_domains: [],
+                    subject_alternative_names_uris: [
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ],
+                },
+                in_toto: Some(
+                    Provenance1(
+                        InTotoPredicateWrapper {
+                            predicate: InTotoProvenance1,
+                        },
+                    ),
                 ),
-                build_config_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_signer_digest: Some(
-                    "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
-                ),
-                build_signer_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_trigger: Some(
-                    "workflow_dispatch",
-                ),
-                issuer_v2: Some(
-                    "https://token.actions.githubusercontent.com",
-                ),
-                run_invocation_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/12359147651/attempts/1",
-                ),
-                runner_environment: Some(
-                    "github-hosted",
-                ),
-                source_repository_digest: Some(
-                    "82a3bfe6dd50fe9c71d6315eae66da15307856cf",
-                ),
-                source_repository_identifier: Some(
-                    "632596897",
-                ),
-                source_repository_owner_identifier: Some(
-                    "131804563",
-                ),
-                source_repository_owner_uri: Some(
-                    "https://github.com/sigstore-conformance",
-                ),
-                source_repository_ref: Some(
-                    "refs/heads/main",
-                ),
-                source_repository_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
-                ),
-                source_repository_visibility_at_signing: Some(
-                    "public",
-                ),
-                subject_alternative_names_emails: [],
-                subject_alternative_names_domains: [],
-                subject_alternative_names_uris: [
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ],
             }
         "#]]
         .assert_debug_eq(&claims);
@@ -314,57 +360,60 @@ mod tests {
         let claims = verify_no_tlog(&root, &bundle, &mut file).unwrap();
 
         expect![[r#"
-            Claims {
-                build_config_digest: Some(
-                    "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
-                ),
-                build_config_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_signer_digest: Some(
-                    "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
-                ),
-                build_signer_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ),
-                build_trigger: Some(
-                    "workflow_dispatch",
-                ),
-                issuer_v2: Some(
-                    "https://token.actions.githubusercontent.com",
-                ),
-                run_invocation_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/8347481628/attempts/1",
-                ),
-                runner_environment: Some(
-                    "github-hosted",
-                ),
-                source_repository_digest: Some(
-                    "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
-                ),
-                source_repository_identifier: Some(
-                    "632596897",
-                ),
-                source_repository_owner_identifier: Some(
-                    "131804563",
-                ),
-                source_repository_owner_uri: Some(
-                    "https://github.com/sigstore-conformance",
-                ),
-                source_repository_ref: Some(
-                    "refs/heads/main",
-                ),
-                source_repository_uri: Some(
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
-                ),
-                source_repository_visibility_at_signing: Some(
-                    "public",
-                ),
-                subject_alternative_names_emails: [],
-                subject_alternative_names_domains: [],
-                subject_alternative_names_uris: [
-                    "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
-                ],
+            VerifyOutcome {
+                claims: Claims {
+                    build_config_digest: Some(
+                        "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
+                    ),
+                    build_config_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_signer_digest: Some(
+                        "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
+                    ),
+                    build_signer_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ),
+                    build_trigger: Some(
+                        "workflow_dispatch",
+                    ),
+                    issuer_v2: Some(
+                        "https://token.actions.githubusercontent.com",
+                    ),
+                    run_invocation_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/actions/runs/8347481628/attempts/1",
+                    ),
+                    runner_environment: Some(
+                        "github-hosted",
+                    ),
+                    source_repository_digest: Some(
+                        "c7b3dfb335f051e1c86bda4c716fac97df62ad81",
+                    ),
+                    source_repository_identifier: Some(
+                        "632596897",
+                    ),
+                    source_repository_owner_identifier: Some(
+                        "131804563",
+                    ),
+                    source_repository_owner_uri: Some(
+                        "https://github.com/sigstore-conformance",
+                    ),
+                    source_repository_ref: Some(
+                        "refs/heads/main",
+                    ),
+                    source_repository_uri: Some(
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon",
+                    ),
+                    source_repository_visibility_at_signing: Some(
+                        "public",
+                    ),
+                    subject_alternative_names_emails: [],
+                    subject_alternative_names_domains: [],
+                    subject_alternative_names_uris: [
+                        "https://github.com/sigstore-conformance/extremely-dangerous-public-oidc-beacon/.github/workflows/extremely-dangerous-oidc-beacon.yml@refs/heads/main",
+                    ],
+                },
+                in_toto: None,
             }
         "#]]
         .assert_debug_eq(&claims);

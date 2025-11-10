@@ -98,7 +98,7 @@ pub(crate) fn validate_rekor_timestamp(
         timestamp: Timestamp::from_second(integrated_time)
             .map_err(|_| RekorTimestampError::OutOfRangeTimestamp)?,
         digest: match digest.algorithm {
-            BundleTlogBodyHashAlgorithm::Sha256 => Digest::Sha256(digest.value.clone()),
+            BundleTlogBodyHashAlgorithm::Sha256 => Digest::sha256_prehashed(digest.value.clone()),
         },
         digest_of,
     }))

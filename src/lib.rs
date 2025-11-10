@@ -10,6 +10,7 @@ mod x509;
 
 pub mod errors {
     pub use crate::claims::ClaimsError;
+    pub use crate::digest::DigestError;
     pub use crate::dsse::DsseError;
     pub use crate::rekor_timestamp::RekorTimestampError;
     pub use crate::rfc3161::Rfc3161Error;
@@ -18,4 +19,4 @@ pub mod errors {
 }
 
 pub use claims::Claims;
-pub use verify::verify_no_tlog;
+pub use verify::{VerifyOutcome, verify_no_tlog};
