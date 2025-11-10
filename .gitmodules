@@ -1,0 +1,3 @@
+[submodule "test-data/sigstore-conformance"]
+	path = test-data/sigstore-conformance
+	url = https://github.com/sigstore/sigstore-conformance
