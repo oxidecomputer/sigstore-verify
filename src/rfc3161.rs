@@ -107,7 +107,9 @@ pub(crate) fn validate_rfc3161(
     }
 
     let digest = match tst_info.message_imprint.hash_algorithm.oid {
-        ID_SHA_256 => Digest::Sha256(tst_info.message_imprint.hashed_message.as_bytes().to_vec()),
+        ID_SHA_256 => {
+            Digest::sha256_prehashed(tst_info.message_imprint.hashed_message.as_bytes().to_vec())
+        }
         oid => return Err(Rfc3161Error::UnsupportedHash(oid)),
     };
 

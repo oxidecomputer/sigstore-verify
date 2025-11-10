@@ -1,5 +1,5 @@
 use crate::claims::{Claims, ClaimsError};
-use crate::digest::Digest;
+use crate::digest::{Digest, DigestCollection, DigestError};
 use crate::dsse::{DsseError, dsse_signature, verify_dsse};
 use crate::rekor_timestamp::{RekorTimestampError, validate_rekor_timestamp};
 use crate::repr::bundle::{Bundle, BundleContent, BundleDigestAlgorithm};
@@ -8,7 +8,7 @@ use crate::repr::trusted_root::TrustedRoot;
 use crate::rfc3161::{Rfc3161Error, validate_rfc3161};
 use crate::x509::{CertError, ensure_trusted_cert, verify_signature};
 use jiff::Timestamp;
-use std::io::{Read, Seek};
+use std::io::Read;
 
 /// Verify that the provided Sigstore bundle matches the provided content.
 ///
@@ -42,12 +42,15 @@ use std::io::{Read, Seek};
 /// );
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn verify_no_tlog<T: Read + Seek>(
+pub fn verify_no_tlog(
     root: &TrustedRoot,
     bundle: &Bundle,
-    mut content: T,
+    content: &mut dyn Read,
 ) -> Result<Claims, VerifyError> {
     let verification = &bundle.verification_material;
+
+    let content_digest = DigestCollection::calculate_from_reader(content)
+        .map_err(VerifyError::CalculateContentDigest)?;
 
     // Sigstore certificates are intentionally short-lived (the Fulcio CA returns certificates with
     // a 10 minute lifespan), so they are almost certainly expired by the time this function is
@@ -77,17 +80,17 @@ pub fn verify_no_tlog<T: Read + Seek>(
         return Err(VerifyError::NoTimestamps);
     }
     for timestamp in &timestamps {
-        verify_with_timestamp(root, bundle, timestamp, &mut content)?;
+        verify_with_timestamp(root, bundle, timestamp, &content_digest)?;
     }
 
     Ok(Claims::from_certificate(&verification.certificate)?)
 }
 
-fn verify_with_timestamp<T: Read + Seek>(
+fn verify_with_timestamp(
     root: &TrustedRoot,
     bundle: &Bundle,
     timestamp: &VerifiedTimestamp,
-    content: T,
+    content_digest: &DigestCollection,
 ) -> Result<(), VerifyError> {
     let certificate = &bundle.verification_material.certificate;
     ensure_trusted_cert(timestamp.timestamp, root, &certificate)
@@ -107,7 +110,7 @@ fn verify_with_timestamp<T: Read + Seek>(
             )
             .map_err(VerifyError::InvalidSignature)?;
             match ms.message_digest.algorithm {
-                BundleDigestAlgorithm::Sha256 => Digest::Sha256(message_digest.clone()),
+                BundleDigestAlgorithm::Sha256 => Digest::sha256_prehashed(message_digest.clone()),
             }
         }
         BundleContent::DsseEnvelope(dsse) => {
@@ -119,19 +122,15 @@ fn verify_with_timestamp<T: Read + Seek>(
             // If you add a compilation error due to new variants, implement some logic to choose which
             // hash to return from the function.
             let InTotoDigest { sha256 } = &subject.digest;
-            Digest::Sha256(sha256.clone())
+            Digest::sha256_prehashed(sha256.clone())
         }
     };
 
-    // TODO: maybe hash only once?
-    if !digest
-        .matches_stream(content)
-        .map_err(VerifyError::Hashing)?
-    {
-        return Err(VerifyError::HashMismatch);
-    }
+    content_digest
+        .verify(&digest)
+        .map_err(VerifyError::VerifyContentDigest)?;
 
-    ensure_timestamp_hash(bundle, timestamp, digest)?;
+    ensure_timestamp_hash(bundle, timestamp, content_digest)?;
 
     Ok(())
 }
@@ -139,36 +138,39 @@ fn verify_with_timestamp<T: Read + Seek>(
 /// It's crucial the signed timestamp was generated specifically for this bundle, and wasn't
 /// requested for other purposes. We thus check whether the digest embedded in the signature
 /// matches the contents of the bundle.
-fn ensure_timestamp_hash(
-    bundle: &Bundle,
+fn ensure_timestamp_hash<'a>(
+    bundle: &'a Bundle,
     timestamp: &VerifiedTimestamp,
-    file_digest: Digest,
+    content_digest: &DigestCollection,
 ) -> Result<(), VerifyError> {
-    // For unscrutable reasons, different sources of trusted timestamps hash different parts of the
-    // bundle. Hash the correct thing depending on what the trusted timestamp tells us.
-    let expected_timestamp_digest = match timestamp.digest_of {
+    let mut extend_lifetime;
+
+    // Different sources of trusted timestamps hash different parts of the bundle. Hash the correct
+    // thing depending on what the trusted timestamp tells us.
+    let collection = match timestamp.digest_of {
         DigestOf::Signature => match &bundle.content {
-            BundleContent::MessageSignature(ms) => &ms.signature,
-            BundleContent::DsseEnvelope(dsse) => dsse_signature(dsse)?,
-        },
-        DigestOf::FileDigest => {
-            // TODO: this is wrong, it needs to go through the normal flow.
-            if timestamp.digest == file_digest {
-                return Ok(());
-            } else {
-                return Err(VerifyError::HashMismatch);
+            BundleContent::MessageSignature(ms) => {
+                extend_lifetime = DigestCollection::calculate(&ms.signature);
+                &extend_lifetime
             }
-        }
+            BundleContent::DsseEnvelope(dsse) => {
+                extend_lifetime = DigestCollection::calculate(dsse_signature(dsse)?);
+                &extend_lifetime
+            }
+        },
+        DigestOf::FileDigest => content_digest,
         DigestOf::DsseEnvelope => match &bundle.content {
             BundleContent::MessageSignature(_) => return Err(VerifyError::DigestOfDsseWithoutDsse),
-            BundleContent::DsseEnvelope(dsse) => &dsse.payload.raw,
+            BundleContent::DsseEnvelope(dsse) => {
+                extend_lifetime = DigestCollection::calculate(&dsse.payload.raw);
+                &mut extend_lifetime
+            }
         },
     };
-    if timestamp.digest.matches(expected_timestamp_digest) {
-        Ok(())
-    } else {
-        Err(VerifyError::TimestampHashMismatch)
-    }
+
+    collection
+        .verify(&timestamp.digest)
+        .map_err(VerifyError::VerifyTimestampDigest)
 }
 
 #[derive(Debug)]
@@ -200,18 +202,18 @@ pub enum VerifyError {
     InvalidSignature(#[source] CertError),
     #[error("invalid DSSE signature")]
     InvalidDsseSignature(#[from] DsseError),
-    #[error("the hash contained in the bundle doesn't match the hash of the file")]
-    HashMismatch,
-    #[error("the hash contained in the signed timestamp doesn't apply to this bundle")]
-    TimestampHashMismatch,
     #[error("the bundle doesn't contain any trusted timestamp")]
     NoTimestamps,
     #[error("digest of the DSSE envelope is requested when the bundle doesn't have it")]
     DigestOfDsseWithoutDsse,
     #[error("expected one in-toto subject in the DSSE envelope, found {0}")]
     WrongInTotoSubjectCount(usize),
-    #[error("failed to hash the file to verify")]
-    Hashing(#[source] std::io::Error),
+    #[error("failed to calculate the digest of the content")]
+    CalculateContentDigest(#[source] DigestError),
+    #[error("failed to verify the digest of the content")]
+    VerifyContentDigest(#[source] DigestError),
+    #[error("failed to verify the digest of the timestamp")]
+    VerifyTimestampDigest(#[source] DigestError),
 }
 
 #[cfg(test)]
