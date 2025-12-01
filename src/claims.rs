@@ -20,6 +20,7 @@ oids! {
     const OID_BUILD_SIGNER_DIGEST = "1.3.6.1.4.1.57264.1.10";
     const OID_BUILD_SIGNER_URI = "1.3.6.1.4.1.57264.1.9";
     const OID_BUILD_TRIGGER = "1.3.6.1.4.1.57264.1.20";
+    const OID_DEPLOYMENT_ENVIRONMENT = "1.3.6.1.4.1.57264.1.23";
     const OID_ISSUER_V2 = "1.3.6.1.4.1.57264.1.8";
     const OID_RUNNER_ENVIRONMENT = "1.3.6.1.4.1.57264.1.11";
     const OID_RUN_INVOCATION_URI = "1.3.6.1.4.1.57264.1.21";
@@ -39,6 +40,7 @@ pub struct Claims {
     pub build_signer_digest: Option<String>,
     pub build_signer_uri: Option<String>,
     pub build_trigger: Option<String>,
+    pub deployment_environment: Option<String>,
     pub issuer_v2: Option<String>,
     pub run_invocation_uri: Option<String>,
     pub runner_environment: Option<String>,
@@ -93,6 +95,7 @@ impl Claims {
                 OID_BUILD_SIGNER_DIGEST => &mut claims.build_signer_digest,
                 OID_BUILD_SIGNER_URI => &mut claims.build_signer_uri,
                 OID_BUILD_TRIGGER => &mut claims.build_trigger,
+                OID_DEPLOYMENT_ENVIRONMENT => &mut claims.deployment_environment,
                 OID_ISSUER_V2 => &mut claims.issuer_v2,
                 OID_RUNNER_ENVIRONMENT => &mut claims.runner_environment,
                 OID_RUN_INVOCATION_URI => &mut claims.run_invocation_uri,
