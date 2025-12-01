@@ -294,6 +294,7 @@ mod tests {
                     build_trigger: Some(
                         "workflow_dispatch",
                     ),
+                    deployment_environment: None,
                     issuer_v2: Some(
                         "https://token.actions.githubusercontent.com",
                     ),
@@ -377,6 +378,7 @@ mod tests {
                     build_trigger: Some(
                         "workflow_dispatch",
                     ),
+                    deployment_environment: None,
                     issuer_v2: Some(
                         "https://token.actions.githubusercontent.com",
                     ),
