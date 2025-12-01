@@ -15,6 +15,36 @@ pub struct TrustedRoot {
     pub tlogs: Vec<TrustedRootTlog>,
 }
 
+impl TrustedRoot {
+    pub fn empty() -> Self {
+        Self {
+            media_type: TrustedRootMediaType,
+            certificate_authorities: Vec::new(),
+            timestamp_authorities: Vec::new(),
+            tlogs: Vec::new(),
+        }
+    }
+
+    pub fn merge(&mut self, other: TrustedRoot) {
+        let TrustedRoot {
+            media_type: _,
+            certificate_authorities: other_cas,
+            timestamp_authorities: other_tas,
+            tlogs: other_tlogs,
+        } = other;
+
+        for ca in other_cas {
+            self.certificate_authorities.push(ca);
+        }
+        for ta in other_tas {
+            self.timestamp_authorities.push(ta);
+        }
+        for tlog in other_tlogs {
+            self.tlogs.push(tlog);
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustedRootCa {
