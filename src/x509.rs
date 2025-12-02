@@ -20,25 +20,40 @@ pub(crate) fn ensure_trusted_cert(
     subject: &Certificate,
 ) -> Result<(), CertError> {
     ensure_valid_cert(time, subject)?;
-    let issuer = find_issuer(
-        time,
-        &root.certificate_authorities,
-        &subject.tbs_certificate.issuer,
-    )?;
 
     let payload = subject
         .tbs_certificate
         .to_der()
         .map_err(CertError::SubjectDerFailed)?;
     let hashed_payload = hash_for_signature(subject.signature_algorithm.oid, &payload)?;
-    verify_signature(time, issuer, &hashed_payload, subject.signature.raw_bytes())
+
+    // GitHub's private Fulcio instance has multiple CAs with the same subject name with
+    // overlapping validity time. Check the signature against all matching issuers rather than just
+    // the first matching issuer.
+    let issuers = find_issuers(
+        time,
+        &root.certificate_authorities,
+        &subject.tbs_certificate.issuer,
+    );
+    if issuers.is_empty() {
+        return Err(CertError::NoMatchingIssuer);
+    }
+    for issuer in issuers {
+        match verify_signature(time, issuer, &hashed_payload, subject.signature.raw_bytes()) {
+            Ok(()) => return Ok(()),
+            Err(CertError::VerificationFailed) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(CertError::VerificationFailed)
 }
 
-fn find_issuer<'a>(
+fn find_issuers<'a>(
     time: Timestamp,
     authorities: &'a [TrustedRootCa],
     subject_name: &RdnSequence,
-) -> Result<&'a Certificate, CertError> {
+) -> Vec<&'a Certificate> {
+    let mut issuers = Vec::new();
     for ca in authorities {
         // Only consider CAs valid at the time the certificate was signed.
         if !ca.valid_for.is_valid(time) {
@@ -46,11 +61,11 @@ fn find_issuer<'a>(
         }
         for issuer in &ca.cert_chain.certificates {
             if *subject_name == issuer.tbs_certificate.subject {
-                return Ok(issuer);
+                issuers.push(issuer);
             }
         }
     }
-    Err(CertError::NoMatchingIssuer)
+    issuers
 }
 
 pub(crate) fn hash_for_signature(
