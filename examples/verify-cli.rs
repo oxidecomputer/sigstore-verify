@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
-static BUNDLED_TRUSTED_ROOT: &[u8] = include_bytes!("../test-data/trusted-roots/sigstore.json");
+static BUNDLED_TRUSTED_ROOT: &str = include_str!("../test-data/trusted-roots/sigstore.json");
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -27,15 +27,23 @@ fn app() -> Result<(), Box<dyn Error>> {
 
     let mut file = BufReader::new(File::open(&cli.file)?);
     let bundle: Bundle = serde_json::from_slice(&std::fs::read(&cli.bundle)?)?;
-    let root: TrustedRoot = serde_json::from_slice(&match &cli.trusted_root {
-        Some(file) => std::fs::read(&file)?,
-        None => BUNDLED_TRUSTED_ROOT.to_vec(),
+    let root = load_trusted_root(&match &cli.trusted_root {
+        Some(file) => std::fs::read_to_string(&file)?,
+        None => BUNDLED_TRUSTED_ROOT.into(),
     })?;
 
     let claims = verify_no_tlog(&root, &bundle, &mut file)?;
     dbg!(claims);
 
     Ok(())
+}
+
+fn load_trusted_root(content: &str) -> Result<TrustedRoot, Box<dyn Error>> {
+    let mut merged = TrustedRoot::empty();
+    for line in content.trim().split('\n') {
+        merged.merge(serde_json::from_str(line)?);
+    }
+    Ok(merged)
 }
 
 fn main() {
