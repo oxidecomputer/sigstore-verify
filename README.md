@@ -8,11 +8,6 @@ The crate **does not verify whether the attestation was uploaded to a
 transparency log**. It verifies whether it was produced by a trusted certificate
 and whether it happened within the certificate's validity period.
 
-> [!WARNING]
->
-> The implementation is currently incomplete. Do not rely on it for any
-> production workload.
-
 Example usage:
 
 ```rust
