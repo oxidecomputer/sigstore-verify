@@ -5,6 +5,7 @@
 mod claims;
 mod digest;
 mod dsse;
+mod fetch_trusted_roots;
 mod rekor_timestamp;
 pub mod repr;
 mod rfc3161;
@@ -16,6 +17,7 @@ pub mod errors {
     pub use crate::claims::ClaimsError;
     pub use crate::digest::DigestError;
     pub use crate::dsse::DsseError;
+    pub use crate::fetch_trusted_roots::FetchTrustedRootError;
     pub use crate::rekor_timestamp::RekorTimestampError;
     pub use crate::rfc3161::Rfc3161Error;
     pub use crate::verify::VerifyError;
@@ -23,4 +25,5 @@ pub mod errors {
 }
 
 pub use claims::Claims;
+pub use fetch_trusted_roots::{GITHUB_DOT_COM, SIGSTORE_PUBLIC_GOOD, fetch_trusted_root};
 pub use verify::{VerifyOutcome, verify_no_tlog};
