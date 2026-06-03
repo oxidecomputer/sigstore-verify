@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! [DSSE] is an encoding format to sign arbitrary data and store those signatures. It's used to
 //! store signed in-toto statements in the bundle. This module implements verifying signatures of
 //! DSSE envelopes.

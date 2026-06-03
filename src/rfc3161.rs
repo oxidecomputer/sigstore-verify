@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! [RFC 3161] ("Internet X.509 Public Key Infrastructre Time-Stamp Protocol") defines a standard
 //! to request a timestamping server to attest that a piece of data existed at a point in time.
 //! This is achieved by sending the hash of the data to the server, and the server replying with
