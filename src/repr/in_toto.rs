@@ -37,6 +37,8 @@ pub enum InTotoPredicate {
     Provenance1(InTotoPredicateWrapper<InTotoProvenance1>),
     #[serde(rename = "https://in-toto.io/attestation/release/v0.1")]
     Release01(InTotoPredicateWrapper<InTotoRelease01>),
+    #[serde(rename = "https://in-toto.io/attestation/release/v0.2")]
+    Release02(InTotoPredicateWrapper<InTotoRelease02>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,8 +54,15 @@ pub struct InTotoProvenance1 {}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InTotoRelease01 {
-    pub repository: String,
-    pub tag: String,
+    pub repository: Option<String>,
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InTotoRelease02 {
+    pub repository: Option<String>,
+    pub tag: Option<String>,
 }
 
 media_type! {
