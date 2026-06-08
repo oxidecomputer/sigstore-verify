@@ -11,6 +11,7 @@ use crate::repr::in_toto::{InTotoDigest, InTotoPredicate, InTotoSubject};
 use crate::repr::trusted_root::TrustedRoot;
 use crate::rfc3161::{Rfc3161Error, validate_rfc3161};
 use crate::x509::{CertError, ensure_trusted_cert, verify_signature};
+use tokio::io::AsyncRead;
 use jiff::Timestamp;
 use std::io::Read;
 
@@ -51,10 +52,33 @@ pub fn verify_no_tlog<'a>(
     bundle: &'a Bundle,
     content: &mut dyn Read,
 ) -> Result<VerifyOutcome<'a>, VerifyError> {
-    let verification = &bundle.verification_material;
-
     let content_digest = DigestCollection::calculate_from_reader(content)
         .map_err(VerifyError::CalculateContentDigest)?;
+    verify_no_tlog_with_digest(root, bundle, content_digest)
+}
+
+/// Verify that the provided Sigstore bundle matches the provided content.
+///
+/// **Transparency log inclusion is not verified by this function!**
+///
+/// See [`verify_no_tlog`] for more information about this function.
+pub async fn verify_no_tlog_async<'a>(
+    root: &TrustedRoot,
+    bundle: &'a Bundle,
+    content: &mut (dyn AsyncRead + Unpin + Send),
+) -> Result<VerifyOutcome<'a>, VerifyError> {
+    let content_digest = DigestCollection::calculate_from_async_reader(content)
+        .await
+        .map_err(VerifyError::CalculateContentDigest)?;
+    verify_no_tlog_with_digest(root, bundle, content_digest)
+}
+
+fn verify_no_tlog_with_digest<'a>(
+    root: &TrustedRoot,
+    bundle: &'a Bundle,
+    content_digest: DigestCollection,
+) -> Result<VerifyOutcome<'a>, VerifyError> {
+    let verification = &bundle.verification_material;
 
     // Sigstore certificates are intentionally short-lived (the Fulcio CA returns certificates with
     // a 10 minute lifespan), so they are almost certainly expired by the time this function is

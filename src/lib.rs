@@ -26,4 +26,4 @@ pub mod errors {
 
 pub use claims::Claims;
 pub use fetch_trusted_roots::{GITHUB_DOT_COM, SIGSTORE_PUBLIC_GOOD, fetch_trusted_root};
-pub use verify::{VerifyOutcome, verify_no_tlog};
+pub use verify::{VerifyOutcome, verify_no_tlog, verify_no_tlog_async};

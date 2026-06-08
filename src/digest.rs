@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use tokio::io::{AsyncRead, AsyncReadExt as _};
 use sha1::Sha1;
 use sha2::{Digest as _, Sha256};
 use std::io::Read;
@@ -67,23 +68,30 @@ impl DigestCollection {
 
     pub(crate) fn calculate_from_reader(reader: &mut dyn Read) -> Result<Self, DigestError> {
         let mut buffer = [0; 1024];
-        let mut sha1 = Sha1::new();
-        let mut sha256 = Sha256::new();
+        let mut builder = DigestCollectionBuilder::new();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(len) => {
-                    let read = &buffer[..len];
-                    sha1.update(read);
-                    sha256.update(read);
-                }
+                Ok(len) => builder.update(&buffer[..len]),
                 Err(err) => return Err(DigestError::Io(err)),
             }
         }
-        Ok(DigestCollection {
-            sha1: Some(Digest::sha1_prehashed(sha1.finalize().to_vec())),
-            sha256: Some(Digest::sha256_prehashed(sha256.finalize().to_vec())),
-        })
+        Ok(builder.finalize())
+    }
+
+    pub(crate) async fn calculate_from_async_reader(
+        reader: &mut (dyn AsyncRead + Unpin + Send),
+    ) -> Result<Self, DigestError> {
+        let mut buffer = [0; 1024];
+        let mut builder = DigestCollectionBuilder::new();
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(len) => builder.update(&buffer[..len]),
+                Err(err) => return Err(DigestError::Io(err)),
+            }
+        }
+        Ok(builder.finalize())
     }
 
     pub(crate) fn verify(&self, digest: &Digest) -> Result<(), DigestError> {
@@ -108,6 +116,32 @@ impl DigestCollection {
             Ok(())
         } else {
             Err(DigestError::HashMismatch)
+        }
+    }
+}
+
+struct DigestCollectionBuilder {
+    sha1: Sha1,
+    sha256: Sha256,
+}
+
+impl DigestCollectionBuilder {
+    fn new() -> Self {
+        Self {
+            sha1: Sha1::new(),
+            sha256: Sha256::new(),
+        }
+    }
+
+    fn update(&mut self, buffer: &[u8]) {
+        self.sha1.update(buffer);
+        self.sha256.update(buffer);
+    }
+
+    fn finalize(self) -> DigestCollection {
+        DigestCollection {
+            sha1: Some(Digest::sha1_prehashed(self.sha1.finalize().to_vec())),
+            sha256: Some(Digest::sha256_prehashed(self.sha256.finalize().to_vec())),
         }
     }
 }

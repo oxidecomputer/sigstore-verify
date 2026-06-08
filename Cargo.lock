@@ -1703,6 +1703,7 @@ dependencies = [
  "sha1",
  "sha2 0.11.0",
  "thiserror",
+ "tokio",
  "tough",
  "x509-cert",
  "x509-tsp",
