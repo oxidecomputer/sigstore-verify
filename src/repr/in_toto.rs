@@ -18,6 +18,8 @@ pub struct InTotoStatement {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InTotoSubject {
+    pub uri: Option<String>,
+    pub name: Option<String>,
     pub digest: InTotoDigest,
 }
 
