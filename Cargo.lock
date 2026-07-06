@@ -1211,7 +1211,7 @@ dependencies = [
 [[package]]
 name = "olpc-cjson"
 version = "0.1.4"
-source = "git+https://github.com/emilyalbini/tough?rev=d29b2b08001085f1e0ba4ba40e18e1a956fbeb06#d29b2b08001085f1e0ba4ba40e18e1a956fbeb06"
+source = "git+https://github.com/oxidecomputer/tough?branch=oxide%2Fdevelop#3a1cb66ebe987c10b50f30aebfe812cae2002f8c"
 dependencies = [
  "serde",
  "serde_json",
@@ -1416,9 +1416,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "reqwest"
-version = "0.13.4"
+version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
@@ -1433,6 +1433,9 @@ dependencies = [
  "log",
  "percent-encoding",
  "pin-project-lite",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-util",
@@ -1535,6 +1538,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "ryu-js"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1629,6 +1638,18 @@ version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
  "serde",
 ]
 
@@ -1922,7 +1943,7 @@ dependencies = [
 [[package]]
 name = "tough"
 version = "0.22.0"
-source = "git+https://github.com/emilyalbini/tough?rev=d29b2b08001085f1e0ba4ba40e18e1a956fbeb06#d29b2b08001085f1e0ba4ba40e18e1a956fbeb06"
+source = "git+https://github.com/oxidecomputer/tough?branch=oxide%2Fdevelop#3a1cb66ebe987c10b50f30aebfe812cae2002f8c"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -2220,9 +2241,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-streams"
-version = "0.5.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
 dependencies = [
  "futures-util",
  "js-sys",
