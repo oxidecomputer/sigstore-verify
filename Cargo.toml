@@ -11,7 +11,7 @@ der = "0.7.10"
 ecdsa = "0.16.9"
 ed25519-dalek = "2.2.0"
 hex = { version = "0.4.3", features = ["serde"] }
-tough = { version = "0.22", git = "https://github.com/oxidecomputer/tough", branch = "oxide/develop", features = ["http"] }
+tough = { version = "0.24", git = "https://github.com/oxidecomputer/tough", branch = "oxide/develop", features = ["http"] }
 jiff = { version = "0.2.15", features = ["serde"] }
 p256 = "0.13.2"
 p384 = "0.13.1"
