@@ -15,6 +15,7 @@ use crate::repr::bundle::{BundleTlogBody, BundleTlogBodyHashAlgorithm, BundleTlo
 use crate::repr::trusted_root::{TrustedRoot, TrustedRootTlogKeyDetails};
 use crate::verify::{DigestOf, VerifiedTimestamp};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
+use canonical_json::CanonicalJSONError;
 use ecdsa::signature::hazmat::PrehashVerifier as _;
 use jiff::Timestamp;
 use p256::pkcs8::DecodePublicKey as _;
@@ -44,13 +45,16 @@ pub(crate) fn validate_rekor_timestamp(
 
     // Rekor transparency log inclusion proofs sign RFC8785-canonicalized JSON bodies of parts of
     // a subset of the metadata present in the bundle. We reconstruct it here.
-    let payload = serde_json_canonicalizer::to_vec(&CanonicalizedPayload {
-        body: BASE64_STANDARD.encode(&entry.canonicalized_body.raw),
-        integrated_time,
-        log_index: entry.log_index,
-        log_id: hex::encode(&entry.log_id.key_id),
-    })
-    .map_err(RekorTimestampError::VerificationPayloadSer)?;
+    let payload = canonical_json::to_string(
+        &serde_json::to_value(&CanonicalizedPayload {
+            body: BASE64_STANDARD.encode(&entry.canonicalized_body.raw),
+            integrated_time,
+            log_index: entry.log_index,
+            log_id: hex::encode(&entry.log_id.key_id),
+        })
+        .map_err(RekorTimestampError::VerificationPayloadSer)?,
+    )
+    .map_err(RekorTimestampError::VerificationPayloadSerCanonical)?;
 
     // Unfortunately we cannot share the verification logic with the x509 module, as Rekor keys are
     // DER-encoded instead of SEC1 encoded.
@@ -85,7 +89,7 @@ pub(crate) fn validate_rekor_timestamp(
                     .map_err(|_| RekorTimestampError::InvalidEd25519SignatureSize)?,
             );
             public_key
-                .verify_strict(&payload, &signature)
+                .verify_strict(payload.as_bytes(), &signature)
                 .map_err(|_| RekorTimestampError::VerificationFailed)?;
         }
     }
@@ -124,6 +128,8 @@ pub enum RekorTimestampError {
     LogKeyNotInTrustedRoot(String),
     #[error("serializing the verification payload to JSON failed")]
     VerificationPayloadSer(#[source] serde_json::Error),
+    #[error("serializing the verification payload to JSON failed")]
+    VerificationPayloadSerCanonical(#[source] CanonicalJSONError),
     #[error("failed to verify the signature of the rekor entry")]
     VerificationFailed,
     #[error("timestamp out of range")]
